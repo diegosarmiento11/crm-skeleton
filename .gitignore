@@ -1,0 +1,44 @@
+# =============================================================================
+# crm-skeleton - .gitignore
+# =============================================================================
+
+# ---- IDE / Editors ----
+.vscode/
+.idea/
+*.iml
+*.swp
+
+# ---- OS ----
+.DS_Store
+Thumbs.db
+
+# ---- Environment & Secrets ----
+.env
+.env.*
+!.env.example
+*.secret
+*.pem
+*.key
+service-account*.json
+
+# ---- Node ----
+node_modules/
+.pnpm-store/
+dist/
+build/
+coverage/
+.turbo/
+*.tsbuildinfo
+npm-debug.log*
+pnpm-debug.log*
+yarn-error.log*
+
+# ---- Logs & temp ----
+logs/
+*.log
+tmp/
+.cache/
+
+# ---- Claude Code (local, no compartido) ----
+.claude/settings.local.json
+.claude/.verify-pending

@@ -1,0 +1,270 @@
+// CRM de referencia — schema.prisma
+// Modelo en PascalCase, tabla y columnas en snake_case (@@map siempre). PK UUID.
+// Cada FK lleva onDelete explícito y su @@index. Cada enum se replica en
+// packages/shared/src/enums (Prisma + const + z.enum tienen que coincidir).
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x", "debian-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────── Equipo ───────────────────────────────
+
+// Espejo de TEAM_ROLES en @crm/shared. PENDIENTE = auto-provisionado, sin áreas.
+enum TeamRole {
+  GERENTE
+  COMERCIAL
+  PENDIENTE
+}
+
+// Miembros del equipo que operan el CRM. La identidad la resuelve el
+// IdentityProvider (correo); esta tabla guarda rol y estado. El id estable de un
+// miembro hacia el resto del CRM (owner, assignees, author_id) es su correo en
+// minúscula, no este UUID: sobrevive a migraciones de proveedor de identidad.
+model TeamUser {
+  id            String    @id @default(uuid()) @db.Uuid
+  email         String    @unique
+  name          String
+  role          TeamRole  @default(PENDIENTE)
+  is_active     Boolean   @default(true)
+  last_login_at DateTime?
+  created_at    DateTime  @default(now())
+  updated_at    DateTime  @updatedAt
+
+  @@map("team_users")
+}
+
+// ─────────────────────────────── Pipeline ───────────────────────────────
+
+// Espejo de STAGE_KINDS en @crm/shared. La analítica lee `kind`, nunca el nombre.
+enum StageKind {
+  OPEN
+  QUALIFY
+  PROPOSAL
+  WON
+  LOST
+}
+
+// Columnas del kanban. El equipo las crea, renombra y reordena; `kind` dice qué
+// papel juega cada una en el embudo (ganado, perdido, calificación, propuesta).
+model PipelineStage {
+  id         String    @id @default(uuid()) @db.Uuid
+  name       String
+  color      String    @default("slate")
+  position   Int
+  kind       StageKind @default(OPEN)
+  leads      Lead[]
+  created_at DateTime  @default(now())
+  updated_at DateTime  @updatedAt
+
+  @@index([position])
+  @@map("pipeline_stages")
+}
+
+// Un negocio en el pipeline. Los datos de contacto NO viven aquí: viven en la
+// Company y las Person asociadas (modelo tipo Attio). Un lead enlaza a una
+// empresa y a varias personas. La actividad ("última interacción") vive en CrmNote.
+model Lead {
+  id               String   @id @default(uuid()) @db.Uuid
+  company          String
+  stage_id         String   @db.Uuid
+  position         Int      @default(0)
+  target_service   String?
+  sector           String?
+  source           String?
+  // Entero en la moneda de CRM_CURRENCY (sin centavos).
+  estimated_value  Int?
+  // Id del miembro responsable (correo en minúscula). null = sin asignar.
+  owner            String?
+  company_id       String?  @db.Uuid
+  // Por qué se perdió (solo tiene sentido en la etapa LOST).
+  lost_reason      String?
+  stage_changed_at DateTime @default(now())
+  created_at       DateTime @default(now())
+  updated_at       DateTime @updatedAt
+
+  // Restrict: una etapa con leads no se borra (el servicio lo convierte en 409).
+  stage          PipelineStage    @relation(fields: [stage_id], references: [id], onDelete: Restrict)
+  company_record Company?         @relation(fields: [company_id], references: [id], onDelete: SetNull)
+  persons        LeadPerson[]
+  stage_events   LeadStageEvent[]
+
+  @@index([stage_id, position])
+  @@index([owner])
+  @@index([company_id])
+  @@map("leads")
+}
+
+// Log append-only de cada transición de etapa (y la entrada inicial, from=null).
+// De aquí sale TODA la analítica del embudo: conversión etapa a etapa, días en
+// etapa, ciclo de venta y desempeño por persona. Nunca se edita ni se borra.
+model LeadStageEvent {
+  id            String   @id @default(uuid()) @db.Uuid
+  lead_id       String   @db.Uuid
+  from_stage_id String?  @db.Uuid
+  to_stage_id   String   @db.Uuid
+  // Responsable del lead en el momento de la transición (atribución del desempeño).
+  owner         String?
+  occurred_at   DateTime @default(now())
+
+  lead Lead @relation(fields: [lead_id], references: [id], onDelete: Cascade)
+
+  @@index([lead_id, occurred_at])
+  @@index([to_stage_id])
+  @@map("lead_stage_events")
+}
+
+// Tabla de unión: un lead se asocia a varias personas, ordenadas por posición.
+model LeadPerson {
+  lead_id    String   @db.Uuid
+  person_id  String   @db.Uuid
+  position   Int      @default(0)
+  created_at DateTime @default(now())
+
+  lead   Lead   @relation(fields: [lead_id], references: [id], onDelete: Cascade)
+  person Person @relation(fields: [person_id], references: [id], onDelete: Cascade)
+
+  @@id([lead_id, person_id])
+  @@index([person_id])
+  @@map("lead_persons")
+}
+
+// ─────────────────────────── Personas y empresas ───────────────────────────
+
+// Espejo de ContactStatusSchema en @crm/shared.
+enum ContactStatus {
+  CONTACTAR
+  NO_CONTACTAR
+  // Baja / rebote duro / spam: bloqueo duro de envío (no volver a contactar).
+  DE_BAJA
+}
+
+// Empresa: objeto de primera clase del CRM. `domain` es la llave para enlazar
+// personas por dominio de correo corporativo (nunca uno público).
+model Company {
+  id               String        @id @default(uuid()) @db.Uuid
+  name             String
+  contact_status   ContactStatus @default(CONTACTAR)
+  email_addresses  String[]
+  phone_numbers    String[]
+  domain           String?
+  description      String?
+  industry         String?
+  primary_location String?
+  linkedin         String?
+  instagram        String?
+  facebook         String?
+  twitter          String?
+  // Origen del registro (provenance), slug: referido | evento | importacion | manual…
+  source           String?
+  created_at       DateTime      @default(now())
+  updated_at       DateTime      @updatedAt
+
+  people Person[]
+  leads  Lead[]
+
+  @@index([source])
+  @@index([industry])
+  @@index([primary_location])
+  @@map("companies")
+}
+
+// Persona: objeto de primera clase del CRM. Pertenece a lo sumo a una empresa.
+model Person {
+  id               String        @id @default(uuid()) @db.Uuid
+  name             String
+  contact_status   ContactStatus @default(CONTACTAR)
+  email_addresses  String[]
+  phone_numbers    String[]
+  description      String?
+  company_id       String?       @db.Uuid
+  job_title        String?
+  source           String?
+  // Industria propia (respaldo cuando no hay empresa asociada).
+  industry         String?
+  primary_location String?
+  linkedin         String?
+  instagram        String?
+  facebook         String?
+  twitter          String?
+  created_at       DateTime      @default(now())
+  updated_at       DateTime      @updatedAt
+
+  company    Company?     @relation(fields: [company_id], references: [id], onDelete: SetNull)
+  lead_links LeadPerson[]
+
+  @@index([company_id])
+  @@index([source])
+  @@map("people")
+}
+
+// ─────────────────────────── Actividad ───────────────────────────
+
+// Notas sobre cualquier registro (entity_type: person | company | lead). `kind`
+// distingue un comentario de un punto de contacto registrado (email/whatsapp/call):
+// los puntos de contacto son la "actividad" que alimenta la salud del lead.
+model CrmNote {
+  id          String   @id @default(uuid()) @db.Uuid
+  entity_type String
+  entity_id   String   @db.Uuid
+  kind        String   @default("comment")
+  body        String
+  author      String?
+  // Identidad estable (correo en minúscula) del autor; la pone el servidor.
+  author_id   String?
+  // Un nivel de hilo: una respuesta apunta a la nota raíz que contesta.
+  parent_id   String?  @db.Uuid
+  created_at  DateTime @default(now())
+
+  @@index([entity_type, entity_id])
+  @@index([parent_id])
+  @@map("crm_notes")
+}
+
+// Tareas de seguimiento ligadas a un registro del CRM. La próxima pendiente de un
+// lead se muestra en su tarjeta; las vencidas alimentan las señales.
+model CrmTask {
+  id          String    @id @default(uuid()) @db.Uuid
+  entity_type String
+  entity_id   String    @db.Uuid
+  title       String
+  done        Boolean   @default(false)
+  due_date    DateTime?
+  // Ids de miembro (correo). Por defecto, el responsable del lead.
+  assignees   String[]  @default([])
+  created_at  DateTime  @default(now())
+  updated_at  DateTime  @updatedAt
+
+  @@index([entity_type, entity_id])
+  @@index([done, due_date])
+  @@map("crm_tasks")
+}
+
+// ─────────────────────────── Preferencias y ajustes ───────────────────────────
+
+// Configuración de tabla por usuario (orden/anchos/visibilidad de columnas).
+// entity = "people" | "companies". config es JSON libre validado por Zod.
+model CrmViewPref {
+  user_email String
+  entity     String
+  config     Json
+  updated_at DateTime @updatedAt
+
+  @@id([user_email, entity])
+  @@map("crm_view_prefs")
+}
+
+// Configuración del CRM a nivel de EQUIPO (no por usuario): clave + JSON.
+// Ej. key "goal" → { monthly_goal } para la meta mensual del embudo.
+model CrmSetting {
+  key        String   @id
+  config     Json
+  updated_at DateTime @updatedAt
+
+  @@map("crm_settings")
+}

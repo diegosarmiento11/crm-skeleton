@@ -1,0 +1,30 @@
+{
+  "name": "crm-skeleton",
+  "version": "0.1.0",
+  "private": true,
+  "description": "CRM de referencia: pipeline, personas y empresas. Monorepo NestJS + Prisma + React con contrato Zod compartido.",
+  "license": "UNLICENSED",
+  "packageManager": "pnpm@9.15.9",
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=9.0.0"
+  },
+  "scripts": {
+    "build": "pnpm --filter @crm/shared build && pnpm --filter server build && pnpm --filter @crm/client build",
+    "dev": "pnpm --filter server start:dev",
+    "dev:client": "pnpm --filter @crm/client dev",
+    "dev:all": "bash scripts/dev-all.sh",
+    "lint": "pnpm -r lint",
+    "test": "pnpm -r test",
+    "test:e2e": "pnpm --filter server test:e2e",
+    "migrate:dev": "pnpm --filter server prisma:migrate:dev",
+    "migrate:deploy": "pnpm --filter server prisma:migrate:deploy",
+    "seed": "pnpm --filter server prisma:seed",
+    "prisma:generate": "pnpm --filter server prisma:generate",
+    "typecheck": "pnpm --filter server typecheck && pnpm --filter @crm/client typecheck",
+    "verify": "pnpm --filter @crm/shared build && pnpm lint && pnpm typecheck && pnpm test"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.4"
+  }
+}
